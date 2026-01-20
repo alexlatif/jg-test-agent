@@ -44,7 +44,6 @@ jobs:
           github_token: ${{ github.token }}
           trigger_phrase: ""
           track_progress: true
-          allowed_tools: "Read,Glob,Grep"
           prompt: |
             PLANNING MODE - Create a structured plan for this issue.
 
@@ -66,3 +65,4 @@ jobs:
             Do NOT change any code. Planning only.
           claude_args: |
             --max-turns 10
+            --tools "Read,Glob,Grep"
