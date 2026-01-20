@@ -1,0 +1,68 @@
+name: agent-plan
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: agent-plan-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    # Run on issue open/edit, OR on comments that are NOT bot commands and not from bots
+    if: |
+      github.event_name == 'issues' ||
+      (github.event_name == 'issue_comment' &&
+       !contains(github.event.comment.body, 'bot::run') &&
+       !contains(github.event.comment.body, 'bot::merge') &&
+       github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for existing PR
+        id: check_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          PR=$(gh pr list --head "agent/issue-${ISSUE_NUM}" --json number --jq '.[0].number' || echo "")
+          echo "pr_number=${PR}" >> $GITHUB_OUTPUT
+          echo "has_pr=$([[ -n "$PR" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          trigger_phrase: ""
+          track_progress: true
+          allowed_tools: "Read,Glob,Grep"
+          prompt: |
+            PLANNING MODE - Create a structured plan for this issue.
+
+            **Issue:** #${{ github.event.issue.number }}
+            **Has existing PR:** ${{ steps.check_pr.outputs.has_pr }}
+            **PR number:** ${{ steps.check_pr.outputs.pr_number }}
+
+            Read .claude/rules/planning.md and follow it exactly.
+
+            Your plan MUST include:
+            1. **Objective** - what we're solving
+            2. **Context** - current state, relevant files with line numbers
+            3. **Theory** - design approach, tradeoffs
+            4. **Issue-Specific Verification** - specific tests/examples/commands that prove it works
+            5. **Risks** - top 3 risks
+            6. **Plan** - numbered steps
+            7. **Todos** - checkbox list mapping to commits
+
+            Do NOT change any code. Planning only.
+          claude_args: |
+            --max-turns 10
