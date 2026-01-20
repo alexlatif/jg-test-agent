@@ -24,22 +24,38 @@ jobs:
       - name: Run standard verification
         id: verify
         run: |
-          just verify 2>&1 | tee verify_output.txt
-          echo "status=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          {
+            echo '=== VERIFICATION OUTPUT ==='
+            just verify 2>&1 || true
+          } > verify_output.txt
+          just verify > /dev/null 2>&1 && echo 'status=0' >> $GITHUB_OUTPUT || echo 'status=1' >> $GITHUB_OUTPUT
         continue-on-error: true
+
+      - name: Capture binary/test output
+        run: |
+          {
+            echo ''
+            echo '=== BINARY OUTPUT ==='
+            echo '$ cargo run -- --version'
+            cargo run -- --version 2>&1 || echo '(no --version)'
+            echo ''
+            echo '$ cargo run -- --help'
+            cargo run -- --help 2>&1 | head -30 || echo '(no --help)'
+            echo ''
+            echo '=== TEST OUTPUT ==='
+            cargo test 2>&1 | tail -50 || true
+          } >> verify_output.txt
 
       - name: Get linked issue
         id: issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Extract issue number from branch name (agent/issue-N)
-          BRANCH="${{ github.head_ref }}"
-          ISSUE_NUM=$(echo "$BRANCH" | sed -n 's/agent\/issue-\([0-9]*\)/\1/p')
+          BRANCH=${{ github.head_ref }}
+          ISSUE_NUM=$(echo ${BRANCH} | sed -n 's/agent\/issue-\([0-9]*\)/\1/p')
           echo "number=${ISSUE_NUM}" >> $GITHUB_OUTPUT
-
-          if [[ -n "$ISSUE_NUM" ]]; then
-            gh issue view "$ISSUE_NUM" --json body --jq .body > issue_body.txt
+          if [ -n "${ISSUE_NUM}" ]; then
+            gh issue view ${ISSUE_NUM} --json body --jq .body > issue_body.txt
           fi
 
       - uses: anthropics/claude-code-action@v1
@@ -50,15 +66,21 @@ jobs:
             VERIFIER MODE.
 
             Standard verification result: ${{ steps.verify.outputs.status == '0' && 'PASS' || 'FAIL' }}
-            See verify_output.txt for details.
+            Full output is in verify_output.txt - READ IT and include relevant excerpts.
 
             Linked issue: #${{ steps.issue.outputs.number }}
             Issue content is in issue_body.txt (if it exists).
 
-            1. Parse the issue for the plan's "Issue-Specific Verification" section
-            2. Run EACH verification item (test, example, command)
-            3. Report results for both standard and issue-specific verification
-            4. Follow .claude/rules/verification.md for report format
-            5. End with VERIFIER: PASS or VERIFIER: FAIL
+            WORKFLOW:
+            1. Read verify_output.txt and extract key results
+            2. Parse the issue for the plan's "Issue-Specific Verification" section
+            3. Run EACH verification item (test, example, command)
+            4. Create a PR comment with:
+               - Verification status (PASS/FAIL)
+               - Test output excerpts (from verify_output.txt)
+               - Binary output (--version, --help if applicable)
+               - Issue-specific verification results
+            5. End comment with: VERIFIER: PASS or VERIFIER: FAIL
           claude_args: |
             --max-turns 12
+            --tools "Read,Glob,Grep,Bash"

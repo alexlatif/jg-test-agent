@@ -18,9 +18,15 @@ jobs:
     if: contains(github.event.comment.body, 'bot::run')
     runs-on: ubuntu-latest
     steps:
+      - name: Post start status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body "🚀 **Implementation started** — [View progress](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for branch operations
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@just
@@ -38,7 +44,6 @@ jobs:
           ISSUE_NUM=${{ github.event.issue.number }}
           BRANCH="agent/issue-${ISSUE_NUM}"
 
-          # Check remote branch
           if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
             echo "branch_exists=true" >> $GITHUB_OUTPUT
             git fetch origin "$BRANCH"
@@ -49,12 +54,12 @@ jobs:
             git checkout -b "$BRANCH"
           fi
 
-          # Check PR
           PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' || echo "")
           echo "pr_number=${PR}" >> $GITHUB_OUTPUT
           echo "has_pr=$([[ -n "$PR" ]] && echo true || echo false)" >> $GITHUB_OUTPUT
 
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
@@ -65,16 +70,79 @@ jobs:
             Branch: agent/issue-${{ github.event.issue.number }}
             Existing PR: ${{ steps.check.outputs.has_pr }} (PR #${{ steps.check.outputs.pr_number }})
 
+            WORKFLOW:
             1. Read the latest plan from the issue conversation
             2. FIRST: Create/update the test or example that proves the fix works
             3. THEN: Implement the fix
-            4. Run `just verify`
-            5. Run the issue-specific verification from the plan
-            6. Commit with messages like: [issue-${{ github.event.issue.number }}] <description>
-            7. Push to the branch
-            8. If no PR exists: create one linking to issue #${{ github.event.issue.number }}
-            9. If PR exists: it will auto-update on push
+            4. Run `just verify` and capture output
+            5. Run issue-specific verification from the plan
+            6. Commit with messages: [issue-${{ github.event.issue.number }}] <description>
+            7. Push to the branch: git push -u origin agent/issue-${{ github.event.issue.number }}
 
-            Include verification output in PR description.
+            IMPORTANT: After pushing, DO NOT try to create a PR - the workflow will handle that.
+            Instead, write a file called `implementation_summary.md` with:
+            - What was implemented
+            - Test output (stdout from cargo test)
+            - Verification commands run and their output
           claude_args: |
             --max-turns 30
+
+      - name: Run verification and capture output
+        id: final_verify
+        run: |
+          {
+            echo '## Verification Output'
+            echo '```'
+            just verify 2>&1 || true
+            echo '```'
+            echo ''
+            echo '## Binary/Example Output'
+            echo '```'
+            cargo run -- --version 2>&1 || echo 'no version flag'
+            cargo run -- --help 2>&1 | head -20 || echo 'no help flag'
+            echo '```'
+          } > verify_results.md
+
+      - name: Create or update PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+        run: |
+          BRANCH=agent/issue-${ISSUE_NUM}
+
+          # Push if there are changes
+          git diff --quiet origin/master..HEAD 2>/dev/null || git push -u origin ${BRANCH} --force-with-lease || git push -u origin ${BRANCH}
+
+          # Build PR body from files
+          {
+            echo "Fixes #${ISSUE_NUM}"
+            echo ''
+            echo '## Implementation Summary'
+            cat implementation_summary.md 2>/dev/null || echo 'See commits for details.'
+            echo ''
+            cat verify_results.md 2>/dev/null || true
+            echo ''
+            echo '---'
+            echo 'Implemented by Claude agent'
+          } > pr_body.md
+
+          # Create or update PR
+          EXISTING_PR=$(gh pr list --head ${BRANCH} --json number --jq '.[0].number' 2>/dev/null || echo '')
+          if [ -n "${EXISTING_PR}" ]; then
+            gh pr edit ${EXISTING_PR} --body-file pr_body.md
+          else
+            TITLE=$(gh issue view ${ISSUE_NUM} --json title --jq .title)
+            gh pr create --head ${BRANCH} --base master --title "[Issue #${ISSUE_NUM}] ${TITLE}" --body-file pr_body.md
+          fi
+
+      - name: Post completion status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            PR_URL=$(gh pr list --head "agent/issue-${{ github.event.issue.number }}" --json url --jq '.[0].url')
+            gh issue comment ${{ github.event.issue.number }} --body "✅ **Implementation complete** — [View PR]($PR_URL)"
+          else
+            gh issue comment ${{ github.event.issue.number }} --body "❌ **Implementation failed** — [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          fi
