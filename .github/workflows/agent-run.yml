@@ -22,7 +22,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue comment ${{ github.event.issue.number }} --body "🚀 **Implementation started** — [View progress](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+          gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "🚀 **Implementation started** — [View progress](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
 
       - uses: actions/checkout@v4
         with:
@@ -139,10 +139,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          if [[ "${{ job.status }}" == "success" ]]; then
-            PR_URL=$(gh pr list --head "agent/issue-${{ github.event.issue.number }}" --json url --jq '.[0].url')
-            gh issue comment ${{ github.event.issue.number }} --body "✅ **Implementation complete** — [View PR]($PR_URL)"
+          if [ "${{ job.status }}" = "success" ]; then
+            PR_URL=$(gh pr list --repo ${REPO} --head agent/issue-${ISSUE} --json url --jq '.[0].url')
+            gh issue comment ${ISSUE} --repo ${REPO} --body "✅ **Implementation complete** — [View PR](${PR_URL})"
           else
-            gh issue comment ${{ github.event.issue.number }} --body "❌ **Implementation failed** — [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            gh issue comment ${ISSUE} --repo ${REPO} --body "❌ **Implementation failed** — [View logs](https://github.com/${REPO}/actions/runs/${RUN_ID})"
           fi
